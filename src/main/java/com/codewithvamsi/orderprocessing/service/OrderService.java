@@ -7,13 +7,13 @@ import com.codewithvamsi.orderprocessing.exception.NotFoundException;
 import com.codewithvamsi.orderprocessing.exception.ProductUnavailableException;
 import com.codewithvamsi.orderprocessing.model.Order;
 import com.codewithvamsi.orderprocessing.model.OrderItem;
-import com.codewithvamsi.orderprocessing.model.response.Product;
 import com.codewithvamsi.orderprocessing.repository.OrderRepository;
 import com.codewithvamsi.orderprocessing.response.OrderResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.transaction.Transactional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 
@@ -44,20 +44,30 @@ public class OrderService {
         return orderList.stream().map(order-> mapToOrderResponse(order)).toList();
     }
     private void validateOrderDto(OrderDto orderDto) {
-        orderDto.orderItemDtoList().forEach(orderItemDto -> {
-            if(!checkProductAvailablitiy(orderItemDto)) {
-                throw new ProductUnavailableException("Product "+orderItemDto.productId()+
-                        "  is unavailable");
-            }
-        });
+
+        List<Mono<Boolean>> availabilityChecks =
+                orderDto.orderItemDtoList().stream().map(orderItemDto -> checkProductAvailablitiy(orderItemDto)).toList();
+
+        Mono.when(availabilityChecks).block();
     }
-    private boolean checkProductAvailablitiy(OrderItemDto orderItemDto){
-        Product productResponseEntity = inventoryClient.getProduct(orderItemDto.productId());
-        if(productResponseEntity==null || productResponseEntity.getAvailable()==null)
-            throw new ProductUnavailableException(
-                    "Inventory info unavailable for product " + orderItemDto.productId()
-            );
-        return productResponseEntity.getAvailable();
+    private Mono<Boolean> checkProductAvailablitiy(OrderItemDto orderItemDto){
+
+        return inventoryClient.getProductAsync(orderItemDto.productId())
+                .map(product -> {
+                    if (product == null || product.getAvailable() == null) {
+                        throw new ProductUnavailableException(
+                                "Inventory info unavailable for product " + orderItemDto.productId()
+                        );
+                    }
+
+                    if (!product.getAvailable()) {
+                        throw new ProductUnavailableException(
+                                "Product " + orderItemDto.productId() + " is unavailable"
+                        );
+                    }
+
+                    return true;
+                });
     }
     private OrderResponse mapToOrderResponse(Order order){
         return objectMapper.convertValue(order, OrderResponse.class);
